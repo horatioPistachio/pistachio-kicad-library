@@ -56,6 +56,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "merge_npth": False,
         },
     },
+    "pos": {
+        "enabled": True,
+        # Output format for position files. KiCad supports CSV and TSV commonly.
+        "format": "csv",  # csv|tsv (support may vary)
+        # Units for coordinates
+        "units": "mm",     # mm|inch
+        # Which side(s) to export
+        "side": "both",    # front|back|both
+    },
     "pcb_pdf": {
         "enabled": True,
         "layers": [
@@ -536,6 +545,61 @@ def export_bom(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], ve
     raise RuntimeError(f"BOM export failed: {res.err or res.out}")
 
 
+def export_pos(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], verbose: bool) -> Dict[str, str]:
+    """Export component position (pick-and-place) files.
+
+    Returns a dict of produced files keyed by 'pos_front' and/or 'pos_back' (or 'pos' for single-side).
+    """
+    if not cfg.get("enabled", True):
+        return {}
+
+    fmt = str(cfg.get("format", "csv")).lower()
+    if fmt not in {"csv", "tsv"}:
+        # Fall back to csv to avoid CLI incompatibility
+        fmt = "csv"
+    units = str(cfg.get("units", "mm")).lower()
+    if units in {"in", "inch", "inches"}:
+        units = "inch"
+    else:
+        units = "mm"
+
+    side = str(cfg.get("side", "both")).lower()
+    if side not in {"front", "back", "both"}:
+        side = "both"
+
+    produced: Dict[str, str] = {}
+
+    def _one(side_sel: str, key: str) -> Optional[Path]:
+        # Write directly to a predictable file name for each side
+        suffix = "Front" if side_sel == "front" else "Back"
+        ext = "csv" if fmt == "csv" else "tsv"
+        out_path = out_dir / f"{FBASE}_POS_{suffix}.{ext}"
+        cmd = [
+            kicad, "pcb", "export", "pos", str(proj.pcb),
+            "-o", str(out_path),
+            "--format", fmt,
+            "--units", units,
+            "--side", side_sel,
+        ]
+        res = run(cmd, verbose=verbose)
+        if res.code == 0 and out_path.exists():
+            produced[key] = str(out_path)
+            return out_path
+        # Surface CLI output to help diagnose version/flag mismatches
+        raise RuntimeError(f"Position export ({side_sel}) failed: {res.err or res.out}")
+
+    if side == "front":
+        _one("front", "pos_front")
+    elif side == "back":
+        _one("back", "pos_back")
+    else:
+        # both
+        _one("front", "pos_front")
+        _one("back", "pos_back")
+
+    return produced
+
+
 # -----------------------------
 # Zip helper
 # -----------------------------
@@ -686,6 +750,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         if config.get("bom", {}).get("enabled", True):
             b = export_bom(kicad_cli_path, proj, out_dir, config.get("bom", {}), verbose)
             outputs["bom_csv"] = str(b)
+        # Component position (pick-and-place) files
+        if config.get("pos", {}).get("enabled", True):
+            pos_outs = export_pos(kicad_cli_path, proj, out_dir, config.get("pos", {}), verbose)
+            outputs.update(pos_outs)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         return 1
