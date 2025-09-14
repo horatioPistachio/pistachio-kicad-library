@@ -1,0 +1,61 @@
+# Example configuration for export_kicad.py
+# All keys are optional; unspecified values use sensible defaults.
+
+general:
+  # Remove existing files in output directory before exporting
+  clean_output: true
+  # Zip Gerbers + Drill outputs into a single archive
+  zip_gerbers: true
+  # Optional explicit path to kicad-cli; normally auto-detected
+  # kicad_cli: "C:/Program Files/KiCad/9.0/bin/kicad-cli.exe"
+
+gerbers:
+  enabled: true
+  layers:
+    - F.Cu
+    - B.Cu
+    - F.SilkS
+    - B.SilkS
+    - F.Mask
+    - B.Mask
+    - Edge.Cuts
+  drill:
+    enabled: true
+    units: mm   # or inch
+    map_format: gerber   # gerber|pdf|svg (depends on KiCad version)
+    merge_npth: false
+
+pcb_pdf:
+  enabled: true
+  layers:
+    - F.Cu
+    - B.Cu
+    - F.SilkS
+    - B.SilkS
+    - F.Mask
+    - B.Mask
+    - Edge.Cuts
+  monochrome: true
+  page_size: A4
+
+schematics_pdf:
+  enabled: true
+  monochrome: true
+  page_size: A4
+  include_title_block: true
+
+step:
+  enabled: true
+  units: mm
+  include_tracks_zones: false
+  model_precision: high
+
+bom:
+  enabled: true
+  method: cli        # cli|plugin
+  output_format: csv
+  # When method: plugin
+  plugin: bom_csv_grouped_by_value
+  plugin_args: []
+  fields: [Reference, Qty, Value, Footprint]
+  group_by: [Value, Footprint]
