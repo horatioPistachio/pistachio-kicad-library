@@ -1,0 +1,151 @@
+(footprint "HARWIN_S1711-46R"
+	(version 20260206)
+	(generator "pcbnew")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(property "Reference" "REF**"
+		(at -1.775 -3.025 0)
+		(layer "F.SilkS")
+		(uuid "c671f848-6f44-47a8-8bb3-3208a8beaf28")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "HARWIN_S1711-46R"
+		(at 5.21 3.025 0)
+		(layer "F.Fab")
+		(uuid "638eeb30-4c99-4a3b-9e9d-94bd53f3c978")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "9c5c392a-4948-4f3d-83b6-d65a8d211268")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "183e9fa1-57d8-49a9-a7a3-64e99c4c823f")
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(attr smd)
+	(duplicate_pad_numbers_are_jumpers no)
+	(fp_line
+		(start -4.95 -1.39)
+		(end -4.95 1.39)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "980f4241-9b3b-473f-8255-255bc7fc41f3")
+	)
+	(fp_line
+		(start -4.95 1.39)
+		(end 4.95 1.39)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "9a2bcaa0-b157-402a-a19e-429dc7a83144")
+	)
+	(fp_line
+		(start 4.95 -1.39)
+		(end -4.95 -1.39)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "921b2e5a-20c0-4f3e-ad12-52917159283a")
+	)
+	(fp_line
+		(start 4.95 1.39)
+		(end 4.95 -1.39)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "5b1bfa8d-a750-409f-b972-2592543dd39c")
+	)
+	(fp_line
+		(start -4.395 -1.14)
+		(end 4.395 -1.14)
+		(stroke
+			(width 0.127)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "e399f9b4-f684-4629-be63-c5009e966a50")
+	)
+	(fp_line
+		(start -4.395 1.14)
+		(end -4.395 -1.14)
+		(stroke
+			(width 0.127)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "f9325b2e-3a2b-42e0-a74c-10f4a5578244")
+	)
+	(fp_line
+		(start 4.395 -1.14)
+		(end 4.395 1.14)
+		(stroke
+			(width 0.127)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "ea8a7546-3295-46a6-9294-dea77095ef4f")
+	)
+	(fp_line
+		(start 4.395 1.14)
+		(end -4.395 1.14)
+		(stroke
+			(width 0.127)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "4e9a2ae7-ef2d-43df-9809-8b36ec5cebf3")
+	)
+	(pad "SH1" smd rect
+		(at 0 0)
+		(size 9.4 2.28)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(solder_mask_margin 0.102)
+		(uuid "ab5ab5cb-6770-48ed-a180-078f1a107587")
+	)
+	(embedded_fonts no)
+	(model "${KIPRJMOD}/lib/pistachio-kicad-library/3d-models/S1711-46R.step"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz -90 -0 -0)
+		)
+	)
+)
