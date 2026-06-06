@@ -7,15 +7,15 @@ general:
   # Zip Gerbers + Drill outputs into a single archive
   zip_gerbers: true
   # Optional explicit path to kicad-cli; normally auto-detected
-  # kicad_cli: "C:/Program Files/KiCad/9.0/bin/kicad-cli.exe"
+  # kicad_cli: "C:/Program Files/KiCad/10.0/bin/kicad-cli.exe"
 
 gerbers:
   enabled: true
   layers:
     - F.Cu
     - B.Cu
-    - F.SilkS
-    - B.SilkS
+    - F.Silkscreen
+    - B.Silkscreen
     - F.Mask
     - B.Mask
     - Edge.Cuts
@@ -30,17 +30,17 @@ pcb_pdf:
   layers:
     - F.Cu
     - B.Cu
-    - F.SilkS
-    - B.SilkS
+    - F.Silkscreen
+    - B.Silkscreen
     - F.Mask
     - B.Mask
     - Edge.Cuts
-  monochrome: true
+  monochrome: false
   page_size: A4
 
 schematics_pdf:
   enabled: true
-  monochrome: true
+  monochrome: false
   page_size: A4
   include_title_block: true
 

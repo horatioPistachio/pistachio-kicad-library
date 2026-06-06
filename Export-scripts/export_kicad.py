@@ -43,8 +43,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "B.Cu",
             "F.Paste",
             "B.Paste",
-            "F.SilkS",
-            "B.SilkS",
+            "F.Silkscreen",
+            "B.Silkscreen",
             "F.Mask",
             "B.Mask",
             "Edge.Cuts",
@@ -70,8 +70,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "layers": [
             "F.Cu",
             "B.Cu",
-            "F.SilkS",
-            "B.SilkS",
+            "F.Silkscreen",
+            "B.Silkscreen",
             "F.Mask",
             "B.Mask",
             "Edge.Cuts",
@@ -189,8 +189,8 @@ def find_kicad_cli(explicit: Optional[str] = None, verbose: bool = False) -> Tup
         candidates.append(on_path)
 
     if os.name == "nt":
-        # Try common KiCad 9 and 8 paths
-        for ver in ("9.0", "9", "8.0", "8"):
+        # Try common KiCad 10, 9 and 8 paths (newest first)
+        for ver in ("10.0", "10", "9.0", "9", "8.0", "8"):
             candidates.append(fr"C:/Program Files/KiCad/{ver}/bin/kicad-cli.exe")
     else:
         # macOS Homebrew default and common Linux paths
@@ -388,14 +388,8 @@ def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any]
         raise RuntimeError("PCB PDF export disabled by config")
     out_path = out_dir / f"{FBASE}_PCB.pdf"
     print(f"Exporting PCB PDF to {out_path} ...")
-    # KiCad's pcb pdf export treats -o as a directory (especially with --mode-multipage).
-    # Export to a temp folder, then move/rename the single resulting PDF to out_path.
-    temp_dir = out_dir / "_pcb_pdf_tmp"
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir, ignore_errors=True)
-    temp_dir.mkdir(parents=True, exist_ok=True)
-
-    cmd = [kicad, "pcb", "export", "pdf", str(proj.pcb), "-o", str(temp_dir)]
+    # KiCad 9+ with --mode-multipage treats -o as the exact output file path.
+    cmd = [kicad, "pcb", "export", "pdf", str(proj.pcb), "-o", str(out_path)]
     layers = cfg.get("layers")
     if layers and isinstance(layers, list):
         cmd += ["--layers", ",".join(layers)]
@@ -407,32 +401,9 @@ def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any]
         cmd += ["--black-and-white"]
     res = run(cmd, verbose=verbose)
     if res.code != 0:
-        # Clean up temp dir on failure
-        shutil.rmtree(temp_dir, ignore_errors=True)
         raise RuntimeError(f"PCB PDF export failed: {res.err or res.out}")
-
-    # Find the generated PDF inside temp_dir
-    pdf_candidates = sorted(temp_dir.glob("*.pdf"))
-    chosen: Optional[Path] = None
-    preferred = temp_dir / f"{proj.name}.pdf"
-    if preferred.exists():
-        chosen = preferred
-    elif pdf_candidates:
-        chosen = pdf_candidates[0]
-
-    if not chosen or not chosen.exists():
-        # Clean up temp dir before erroring out
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError(f"PCB PDF export failed: No PDF produced in {temp_dir}")
-
-    # Move to desired output path
-    try:
-        if out_path.exists():
-            out_path.unlink(missing_ok=True)  # type: ignore[arg-type]
-        shutil.move(str(chosen), str(out_path))
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
+    if not out_path.exists():
+        raise RuntimeError(f"PCB PDF export failed: No PDF produced at {out_path}")
     return out_path
 
 

@@ -16,9 +16,9 @@ All artifacts are written to `Exports/<project>_<tag>/` under the project direct
 Prerequisites
 -------------
 - Python 3.10+
-- KiCad 9.x preferred (8.x likely compatible). Ensure `kicad-cli` is installed.
-	- Windows: Install KiCad; ensure `C:\\Program Files\\KiCad\\9.0\\bin` is on PATH, or set `general.kicad_cli` in `export.yaml` to the full path (e.g., `C:/Program Files/KiCad/9.0/bin/kicad-cli.exe`).
-	- Ubuntu: Use the KiCad PPA for v9: `ppa:kicad/kicad-9.0` (see the CI workflow for commands). `kicad-cli` will be on PATH.
+- KiCad 10.x preferred (9.x compatible). Ensure `kicad-cli` is installed.
+	- Windows: Install KiCad; the script auto-detects versions 10, 9, and 8 under `C:\\Program Files\\KiCad\\`. Alternatively, set `general.kicad_cli` in `export.yaml` to the full path (e.g., `C:/Program Files/KiCad/10.0/bin/kicad-cli.exe`).
+	- Ubuntu: Use the KiCad PPA for v10: `ppa:kicad/kicad-10.0-releases` (see the CI workflow for commands). `kicad-cli` will be on PATH.
 	- macOS: Install via Homebrew `brew install --cask kicad`. Ensure `/usr/local/bin` or `/opt/homebrew/bin` is on PATH.
 - Optional: `PyYAML` if you use a custom config file (`pip install pyyaml`).
 
