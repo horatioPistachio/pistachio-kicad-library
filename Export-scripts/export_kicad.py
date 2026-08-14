@@ -189,11 +189,7 @@ def find_kicad_cli(explicit: Optional[str] = None, verbose: bool = False) -> Tup
         candidates.append(on_path)
 
     if os.name == "nt":
-<<<<<<< HEAD
-        # Try common KiCad 10, 9 and 8 paths (newest first)
-=======
         # Try common KiCad 10, 9 and 8 paths
->>>>>>> kicad-10-port
         for ver in ("10.0", "10", "9.0", "9", "8.0", "8"):
             candidates.append(fr"C:/Program Files/KiCad/{ver}/bin/kicad-cli.exe")
     else:
@@ -392,14 +388,10 @@ def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any]
         raise RuntimeError("PCB PDF export disabled by config")
     out_path = out_dir / f"{FBASE}_PCB.pdf"
     print(f"Exporting PCB PDF to {out_path} ...")
-<<<<<<< HEAD
-    # KiCad 9+ with --mode-multipage treats -o as the exact output file path.
-=======
     # Remove any pre-existing file so kicad-cli can write cleanly.
     if out_path.exists():
         out_path.unlink()
 
->>>>>>> kicad-10-port
     cmd = [kicad, "pcb", "export", "pdf", str(proj.pcb), "-o", str(out_path)]
     layers = cfg.get("layers")
     if layers and isinstance(layers, list):
@@ -414,15 +406,10 @@ def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any]
     res = run(cmd, verbose=verbose)
     if res.code != 0:
         raise RuntimeError(f"PCB PDF export failed: {res.err or res.out}")
-<<<<<<< HEAD
-    if not out_path.exists():
-        raise RuntimeError(f"PCB PDF export failed: No PDF produced at {out_path}")
-=======
 
     if not out_path.exists():
         raise RuntimeError(f"PCB PDF export failed: No PDF produced at {out_path}")
 
->>>>>>> kicad-10-port
     return out_path
 
 
