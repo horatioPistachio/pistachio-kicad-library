@@ -189,7 +189,11 @@ def find_kicad_cli(explicit: Optional[str] = None, verbose: bool = False) -> Tup
         candidates.append(on_path)
 
     if os.name == "nt":
+<<<<<<< HEAD
         # Try common KiCad 10, 9 and 8 paths (newest first)
+=======
+        # Try common KiCad 10, 9 and 8 paths
+>>>>>>> kicad-10-port
         for ver in ("10.0", "10", "9.0", "9", "8.0", "8"):
             candidates.append(fr"C:/Program Files/KiCad/{ver}/bin/kicad-cli.exe")
     else:
@@ -388,12 +392,20 @@ def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any]
         raise RuntimeError("PCB PDF export disabled by config")
     out_path = out_dir / f"{FBASE}_PCB.pdf"
     print(f"Exporting PCB PDF to {out_path} ...")
+<<<<<<< HEAD
     # KiCad 9+ with --mode-multipage treats -o as the exact output file path.
+=======
+    # Remove any pre-existing file so kicad-cli can write cleanly.
+    if out_path.exists():
+        out_path.unlink()
+
+>>>>>>> kicad-10-port
     cmd = [kicad, "pcb", "export", "pdf", str(proj.pcb), "-o", str(out_path)]
     layers = cfg.get("layers")
     if layers and isinstance(layers, list):
         cmd += ["--layers", ",".join(layers)]
-    # Produce a single multi-page PDF (one layer per page)
+    # Produce a single multi-page PDF (one layer per page).
+    # KiCad 10+ expects -o to be the output file path when using --mode-multipage.
     cmd += ["--mode-multipage"]
     if cfg.get("include_title_block", True):
         cmd += ["--include-border-title"]
@@ -402,8 +414,15 @@ def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any]
     res = run(cmd, verbose=verbose)
     if res.code != 0:
         raise RuntimeError(f"PCB PDF export failed: {res.err or res.out}")
+<<<<<<< HEAD
     if not out_path.exists():
         raise RuntimeError(f"PCB PDF export failed: No PDF produced at {out_path}")
+=======
+
+    if not out_path.exists():
+        raise RuntimeError(f"PCB PDF export failed: No PDF produced at {out_path}")
+
+>>>>>>> kicad-10-port
     return out_path
 
 
@@ -450,6 +469,7 @@ def export_bom(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], ve
             normalized_fields.append("${DNP}")
         else:
             normalized_fields.append(fl)
+    import re as _re
     required_fields = ["Supplier", "Supplier Part Number"]
     fields_final: List[str] = []
     seen = set()
@@ -458,11 +478,19 @@ def export_bom(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], ve
         if f not in seen:
             fields_final.append(f)
             seen.add(f)
-    # Append required fields if missing
+    # Append required fields if not already satisfied.
+    # "Supplier Part Number" is satisfied by any field matching /part\s*number/i
+    # (e.g. "Mouser Part Number", "Digikey Part Number").
+    _part_num_present = any(_re.search(r'part\s*number', s, _re.IGNORECASE) for s in seen)
     for f in required_fields:
+        _is_part_num = bool(_re.search(r'part\s*number', f, _re.IGNORECASE))
+        if _is_part_num and _part_num_present:
+            continue
         if f not in seen:
             fields_final.append(f)
             seen.add(f)
+            if _is_part_num:
+                _part_num_present = True
     if fields_final:
         cmd += ["--fields", ",".join(fields_final)]
 
@@ -505,9 +533,11 @@ def export_bom(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], ve
                 reader = csv.reader(f, delimiter=getattr(dialect, "delimiter", ","))
                 header = next(reader, [])
                 header_set = set(h.strip() for h in header)
-                for missing_col in ["Supplier", "Supplier Part Number"]:
-                    if missing_col not in header_set:
-                        print(f"Warning: BOM is missing expected column '{missing_col}'. Add this field to your symbols or update BOM settings.", file=sys.stderr)
+                if "Supplier" not in header_set:
+                    print("Warning: BOM is missing expected column 'Supplier'. Add this field to your symbols or update BOM settings.", file=sys.stderr)
+                import re as _re2
+                if not any(_re2.search(r'part\s*number', h, _re2.IGNORECASE) for h in header_set):
+                    print("Warning: BOM is missing a 'Part Number' column (e.g. 'Supplier Part Number', 'Mouser Part Number'). Add this field to your symbols or update BOM settings.", file=sys.stderr)
         except Exception:
             # Non-fatal: ignore parsing issues
             pass
