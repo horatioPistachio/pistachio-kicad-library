@@ -27,6 +27,7 @@ gerbers:
 
 pcb_pdf:
   enabled: true
+  # Pages 2..N: one layer per page, in this order.
   layers:
     - F.Cu
     - B.Cu
@@ -35,6 +36,19 @@ pcb_pdf:
     - F.Mask
     - B.Mask
     - Edge.Cuts
+  # Page 1: a single composite plot of the whole board.
+  stack_page:
+    enabled: true
+    # Omit (or leave null) to plot every layer enabled in the .kicad_pcb.
+    # layers: [F.Cu, B.Cu, F.Silkscreen, Edge.Cuts, User.1]
+    exclude_layers: []
+  # Layers carrying process notes (e.g. conformal coating). Always included on
+  # the stack page and plotted last, so they draw on top of everything else.
+  # notes_layers: [User.1]
+  notes_layers: []
+  # Set true to also give the notes layers their own page in the per-layer
+  # sequence -- useful if the composite page 1 is too busy to read them on.
+  notes_own_page: false
   monochrome: false
   page_size: A4
 
@@ -57,5 +71,18 @@ bom:
   # When method: plugin
   plugin: bom_csv_grouped_by_value
   plugin_args: []
+  # Columns to place first, in this order. Every other field found on the
+  # symbols is appended automatically (see include_all_fields).
   fields: [Reference, Qty, Value, Footprint]
+  # Scan the schematic hierarchy and include every symbol field in the BOM, so
+  # custom fields (MPN, LCSC, Manufacturer, Supplier...) are never dropped just
+  # because their name is not listed above. Set false for a fixed column set.
+  include_all_fields: true
+  # Field names to keep out of the BOM even when present on symbols.
+  exclude_fields: []
+  # Fold together columns whose names differ only by case/spacing/punctuation
+  # ("MPN" vs "mpn"). Columns with conflicting values are left separate.
+  merge_similar_fields: true
+  # Rows sharing these values are merged. Add your part-number field here if
+  # parts with the same value/footprint carry different part numbers.
   group_by: [Value, Footprint]

@@ -14,6 +14,7 @@ import datetime as _dt
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -76,6 +77,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "B.Mask",
             "Edge.Cuts",
         ],
+        # First page of the PCB PDF: a single composite plot of the whole board.
+        "stack_page": {
+            "enabled": True,
+            "layers": None,        # None/auto => every layer enabled in the .kicad_pcb
+            "exclude_layers": [],  # layer names to drop from the composite
+        },
+        # Layers carrying process notes (e.g. conformal coating). Forced onto the
+        # stack page and plotted last so they draw on top of everything else.
+        "notes_layers": [],
+        # Opt-in: also give the notes layers their own page in the per-layer sequence.
+        "notes_own_page": False,
         "monochrome": False,
         "include_title_block": True,
         "page_size": "A4",
@@ -103,6 +115,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # Use KiCad's special substitutions for quantity and DNP
         "fields": ["Reference", "${QUANTITY}", "Value", "Footprint", "Supplier", "Supplier Part Number", "${DNP}"],
         "group_by": ["Value", "Footprint"],
+        # Scan the schematic hierarchy and add every symbol field found to the
+        # BOM, so custom fields (MPN, LCSC, Manufacturer, ...) are never dropped
+        # just because they are not listed in `fields`.
+        "include_all_fields": True,
+        # Field names to keep out of the BOM even if present on symbols.
+        "exclude_fields": [],
+        # Post-process the CSV: fold together columns whose headers differ only
+        # by case/spacing/punctuation (e.g. "MPN" vs "mpn", "Part Number" vs
+        # "Part_Number"). Columns with conflicting values are left alone.
+        "merge_similar_fields": True,
     },
 }
 
@@ -383,7 +405,96 @@ def export_step(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], v
     return out_path
 
 
-def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], verbose: bool) -> Path:
+def read_board_layers(pcb: Path) -> List[str]:
+    """Return the canonical names of every layer enabled in a .kicad_pcb.
+
+    The board-level layer table looks like:
+
+        (layers
+          (0 "F.Cu" signal)
+          (9 "User.1" user "Coating Notes")
+          ...
+        )
+
+    Only enabled layers are listed, so this is exactly "all available layers".
+    We take the canonical (untranslated) name in position 1 -- that is what
+    kicad-cli's --layers expects -- and ignore any user-facing alias in
+    position 3. Pad/footprint layer lists have no leading integer index, so the
+    index requirement keeps them out. Returns [] if the table can't be parsed.
+    """
+    import re
+
+    try:
+        text = pcb.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    m = re.search(r"^\s*\(layers\b", text, re.MULTILINE)
+    if not m:
+        return []
+
+    # Walk forward from the opening paren to its match to isolate the block.
+    depth = 0
+    start = text.index("(", m.start())
+    end = -1
+    for i in range(start, len(text)):
+        c = text[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end < 0:
+        return []
+
+    layers: List[str] = []
+    for name in re.findall(r'\(\s*\d+\s+"([^"]+)"', text[start:end]):
+        if name not in layers:
+            layers.append(name)
+    return layers
+
+
+def merge_pdfs(out_path: Path, parts: List[Path], bookmarks: List[str]) -> bool:
+    """Concatenate `parts` into `out_path`, adding one outline entry per page.
+
+    `bookmarks` is aligned to the resulting pages; extra pages are left unnamed.
+    Returns False if pypdf is unavailable so callers can degrade gracefully.
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter  # type: ignore
+    except Exception:
+        return False
+
+    writer = PdfWriter()
+    for part in parts:
+        reader = PdfReader(str(part))
+        for page in reader.pages:
+            writer.add_page(page)
+
+    for idx, title in enumerate(bookmarks):
+        if idx >= len(writer.pages):
+            break
+        try:
+            writer.add_outline_item(title, idx)
+        except Exception:
+            # Outlines are a nicety; never fail the export over them.
+            break
+
+    if out_path.exists():
+        out_path.unlink()
+    with out_path.open("wb") as f:
+        writer.write(f)
+    return True
+
+
+def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], verbose: bool) -> Dict[str, str]:
+    """Export the PCB PDF: a full-stack composite first page, then one page per layer.
+
+    Returns a dict of produced artifacts keyed by 'pcb_pdf' (and 'pcb_pdf_stack'
+    when the two halves could not be merged).
+    """
     if not cfg.get("enabled", True):
         raise RuntimeError("PCB PDF export disabled by config")
     out_path = out_dir / f"{FBASE}_PCB.pdf"
@@ -392,25 +503,100 @@ def export_pcb_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any]
     if out_path.exists():
         out_path.unlink()
 
-    cmd = [kicad, "pcb", "export", "pdf", str(proj.pcb), "-o", str(out_path)]
-    layers = cfg.get("layers")
-    if layers and isinstance(layers, list):
+    def _common_flags(cmd: List[str]) -> List[str]:
+        if cfg.get("include_title_block", True):
+            cmd += ["--include-border-title"]
+        if cfg.get("monochrome"):
+            cmd += ["--black-and-white"]
+        return cmd
+
+    notes_layers = [str(x) for x in (cfg.get("notes_layers") or [])]
+
+    layers = list(cfg.get("layers") or [])
+    if notes_layers and cfg.get("notes_own_page"):
+        for name in notes_layers:
+            if name not in layers:
+                layers.append(name)
+
+    # --- Page 1: full-stack composite ---
+    stack_cfg = cfg.get("stack_page") or {}
+    stack_tmp: Optional[Path] = None
+    if stack_cfg.get("enabled", True):
+        stack_layers = stack_cfg.get("layers")
+        if not stack_layers:
+            stack_layers = read_board_layers(proj.pcb)
+            if not stack_layers:
+                print(
+                    f"Warning: could not read the layer table from {proj.pcb.name}; "
+                    "falling back to the configured pcb_pdf.layers for the stack page.",
+                    file=sys.stderr,
+                )
+                stack_layers = list(cfg.get("layers") or [])
+        stack_layers = [str(x) for x in stack_layers]
+
+        excluded = {str(x) for x in (stack_cfg.get("exclude_layers") or [])}
+        # Notes layers go last so they plot on top of copper and silkscreen.
+        stack_layers = [x for x in stack_layers if x not in excluded and x not in notes_layers]
+        stack_layers += [x for x in notes_layers if x not in excluded]
+
+        if not stack_layers:
+            print("Warning: stack page has no layers to plot; skipping it.", file=sys.stderr)
+        else:
+            stack_tmp = out_dir / f"{FBASE}_PCB_stack.tmp.pdf"
+            if stack_tmp.exists():
+                stack_tmp.unlink()
+            # --mode-single composites every listed layer onto one page; -o is the
+            # complete file path in this mode.
+            cmd = _common_flags([
+                kicad, "pcb", "export", "pdf", str(proj.pcb), "-o", str(stack_tmp),
+                "--layers", ",".join(stack_layers),
+                "--mode-single",
+            ])
+            res = run(cmd, verbose=verbose)
+            if res.code != 0 or not stack_tmp.exists():
+                raise RuntimeError(f"PCB stack page export failed: {res.err or res.out}")
+
+    # --- Pages 2..N: one layer per page ---
+    layers_tmp = out_dir / f"{FBASE}_PCB_layers.tmp.pdf" if stack_tmp else out_path
+    if layers_tmp.exists():
+        layers_tmp.unlink()
+
+    cmd = [kicad, "pcb", "export", "pdf", str(proj.pcb), "-o", str(layers_tmp)]
+    if layers:
         cmd += ["--layers", ",".join(layers)]
     # Produce a single multi-page PDF (one layer per page).
     # KiCad 10+ expects -o to be the output file path when using --mode-multipage.
     cmd += ["--mode-multipage"]
-    if cfg.get("include_title_block", True):
-        cmd += ["--include-border-title"]
-    if cfg.get("monochrome"):
-        cmd += ["--black-and-white"]
+    _common_flags(cmd)
     res = run(cmd, verbose=verbose)
     if res.code != 0:
         raise RuntimeError(f"PCB PDF export failed: {res.err or res.out}")
 
-    if not out_path.exists():
-        raise RuntimeError(f"PCB PDF export failed: No PDF produced at {out_path}")
+    if not layers_tmp.exists():
+        raise RuntimeError(f"PCB PDF export failed: No PDF produced at {layers_tmp}")
 
-    return out_path
+    if stack_tmp is None:
+        return {"pcb_pdf": str(out_path)}
+
+    # --- Merge: stack page in front of the per-layer pages ---
+    if merge_pdfs(out_path, [stack_tmp, layers_tmp], ["Full Stack"] + layers):
+        stack_tmp.unlink(missing_ok=True)
+        layers_tmp.unlink(missing_ok=True)
+        return {"pcb_pdf": str(out_path)}
+
+    # pypdf unavailable: ship the two halves side by side rather than failing.
+    stack_path = out_dir / f"{FBASE}_PCB_Stack.pdf"
+    if stack_path.exists():
+        stack_path.unlink()
+    stack_tmp.replace(stack_path)
+    layers_tmp.replace(out_path)
+    print(
+        "Warning: pypdf is not installed, so the full-stack page could not be merged "
+        f"into {out_path.name}. It was written separately as {stack_path.name}. "
+        "Install it with 'pip install pypdf' to get a single combined PDF.",
+        file=sys.stderr,
+    )
+    return {"pcb_pdf": str(out_path), "pcb_pdf_stack": str(stack_path)}
 
 
 def export_sch_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], verbose: bool) -> Path:
@@ -424,6 +610,223 @@ def export_sch_pdf(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any]
     if res.code != 0:
         raise RuntimeError(f"Schematics PDF export failed: {res.err or res.out}")
     return out_path
+
+
+# -----------------------------
+# BOM field discovery
+# -----------------------------
+# Matches `(property "Name" "Value" ...)` inside a KiCad s-expression file.
+_PROP_RE = re.compile(r'\(\s*property\s+"((?:[^"\\]|\\.)*)"\s+"((?:[^"\\]|\\.)*)"')
+
+# Symbol properties that are library bookkeeping rather than BOM data.
+_SKIP_FIELD_PREFIXES = ("ki_",)
+_SKIP_FIELD_NAMES = {"sheetname", "sheetfile", "sheet name", "sheet file"}
+
+# A column counts as a part number if its name looks like one; users name these
+# all sorts of ways (MPN, Mouser Part Number, Manufacturer_PN, ...).
+_PART_NUM_RE = re.compile(r"part\s*[-_ ]?\s*(number|no\b|num\b)|\bmpn\b|\bp/?n\b|part[-_]?number", re.IGNORECASE)
+_SUPPLIER_RE = re.compile(r"supplier|distributor|vendor", re.IGNORECASE)
+
+
+def _sexpr_block_end(text: str, start: int) -> int:
+    """Return the index just past the ')' closing the s-expression at text[start] == '('."""
+    depth = 0
+    i = start
+    n = len(text)
+    in_str = False
+    while i < n:
+        c = text[i]
+        if in_str:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _iter_sexpr_blocks(text: str, token: str):
+    """Yield the source of each top-level `(token ...)` block, brace- and string-aware."""
+    pat = re.compile(r"\(\s*" + re.escape(token) + r"(?=[\s(])")
+    i = 0
+    while True:
+        m = pat.search(text, i)
+        if not m:
+            return
+        end = _sexpr_block_end(text, m.start())
+        yield text[m.start():end]
+        i = end
+
+
+def _unescape_sexpr(s: str) -> str:
+    return s.replace('\\"', '"').replace("\\\\", "\\")
+
+
+def discover_symbol_fields(top_sch: Path, verbose: bool = False) -> List[str]:
+    """Collect every property name used by symbols across the schematic hierarchy.
+
+    Walks the root sheet and every sheet it references (recursively), skipping
+    `lib_symbols` template definitions and KiCad-internal `ki_*` properties.
+    Returns names in first-seen order.
+    """
+    found: List[str] = []
+    seen: set = set()
+    visited: set = set()
+    queue: List[Path] = [top_sch]
+
+    while queue:
+        sch = queue.pop(0)
+        try:
+            key = str(sch.resolve()).lower()
+        except OSError:
+            key = str(sch).lower()
+        if key in visited:
+            continue
+        visited.add(key)
+
+        try:
+            text = sch.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            print(f"Warning: could not read {sch} for BOM field discovery: {e}", file=sys.stderr)
+            continue
+
+        # Library definitions carry template fields, not instance data.
+        for blk in _iter_sexpr_blocks(text, "lib_symbols"):
+            text = text.replace(blk, "", 1)
+
+        for sym in _iter_sexpr_blocks(text, "symbol"):
+            for m in _PROP_RE.finditer(sym):
+                name = _unescape_sexpr(m.group(1)).strip()
+                if not name or name in seen:
+                    continue
+                low = name.lower()
+                if low in _SKIP_FIELD_NAMES or low.startswith(_SKIP_FIELD_PREFIXES):
+                    continue
+                if "," in name or '"' in name:
+                    # kicad-cli takes a comma-separated list; such a name cannot be requested.
+                    print(f"Warning: skipping BOM field with unsupported name: {name!r}", file=sys.stderr)
+                    continue
+                seen.add(name)
+                found.append(name)
+
+        # Follow hierarchical sheets.
+        for sheet in _iter_sexpr_blocks(text, "sheet"):
+            for m in _PROP_RE.finditer(sheet):
+                if _unescape_sexpr(m.group(1)).strip().lower() in {"sheetfile", "sheet file"}:
+                    rel = _unescape_sexpr(m.group(2)).strip()
+                    if rel:
+                        queue.append(sch.parent / rel)
+
+    if verbose:
+        print(f"BOM: discovered {len(found)} symbol field(s) across {len(visited)} sheet(s): {', '.join(found)}")
+    return found
+
+
+def _normalize_field_key(name: str) -> str:
+    """Collapse a field name to its comparison key: lowercase, alphanumerics only."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _read_csv_table(path: Path) -> Tuple[List[List[str]], str]:
+    import csv
+
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        sample = f.read(4096)
+        f.seek(0)
+        try:
+            delim = csv.Sniffer().sniff(sample, delimiters=[",", "\t", ";"]).delimiter
+        except Exception:
+            delim = ","
+        rows = list(csv.reader(f, delimiter=delim))
+    return rows, delim
+
+
+def _merge_similar_columns(path: Path, verbose: bool) -> None:
+    """Fold together BOM columns whose headers differ only by case/spacing/punctuation.
+
+    KiCad matches symbol fields exactly, so "MPN" and "mpn" become two columns
+    with half the data in each. Merge them when they never disagree; if any row
+    holds two different non-empty values, leave both columns and warn instead.
+    """
+    import csv
+
+    try:
+        rows, delim = _read_csv_table(path)
+    except Exception as e:
+        print(f"Warning: could not post-process BOM columns: {e}", file=sys.stderr)
+        return
+    if not rows:
+        return
+
+    header = rows[0]
+    body = rows[1:]
+    groups: Dict[str, List[int]] = {}
+    for idx, name in enumerate(header):
+        key = _normalize_field_key(name)
+        if not key:
+            continue
+        groups.setdefault(key, []).append(idx)
+
+    drop: set = set()
+    changed = False
+    for key, idxs in groups.items():
+        if len(idxs) < 2:
+            continue
+        names = [header[i] for i in idxs]
+        conflict = False
+        for row in body:
+            values = {row[i].strip() for i in idxs if i < len(row) and row[i].strip()}
+            if len(values) > 1:
+                conflict = True
+                break
+        if conflict:
+            print(
+                "Warning: BOM columns {} hold different values on the same row; "
+                "leaving them separate. Rename the symbol fields to a single spelling.".format(
+                    ", ".join(repr(n) for n in names)
+                ),
+                file=sys.stderr,
+            )
+            continue
+        # Keep the variant that carries the most data; ties keep the leftmost.
+        counts = [sum(1 for row in body if i < len(row) and row[i].strip()) for i in idxs]
+        keep_pos = counts.index(max(counts))
+        keep = idxs[keep_pos]
+        for row in body:
+            if keep < len(row) and row[keep].strip():
+                continue
+            for i in idxs:
+                if i < len(row) and row[i].strip():
+                    while len(row) <= keep:
+                        row.append("")
+                    row[keep] = row[i]
+                    break
+        drop.update(i for i in idxs if i != keep)
+        changed = True
+        print(
+            "BOM: merged columns {} into {!r}.".format(", ".join(repr(n) for n in names), header[keep]),
+            file=sys.stderr,
+        )
+
+    if not changed:
+        return
+
+    keep_idx = [i for i in range(len(header)) if i not in drop]
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f, delimiter=delim, lineterminator="\n")
+        for row in [header] + body:
+            w.writerow([row[i] if i < len(row) else "" for i in keep_idx])
+    if verbose:
+        print(f"BOM: rewrote {path.name} with {len(keep_idx)} column(s)")
 
 
 def export_bom(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], verbose: bool) -> Path:
@@ -440,7 +843,9 @@ def export_bom(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], ve
         preset = "CSV" if fmt == "csv" else "TSV"
         cmd += ["--format-preset", preset]
 
-    # Ensure Supplier columns are always requested and quantity is the KiCad token
+    # Start from the configured fields, then fold in every field actually
+    # present on symbols, so a column is never dropped just because its name
+    # does not match the config exactly.
     user_fields = list(map(str, cfg.get("fields") or []))
     if not user_fields:
         # If no user fields provided, seed with sensible defaults
@@ -456,28 +861,42 @@ def export_bom(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], ve
             normalized_fields.append("${DNP}")
         else:
             normalized_fields.append(fl)
-    import re as _re
-    required_fields = ["Supplier", "Supplier Part Number"]
+
+    exclude = {str(x).strip().lower() for x in (cfg.get("exclude_fields") or [])}
     fields_final: List[str] = []
     seen = set()
     # Preserve order of user_fields
     for f in normalized_fields:
-        if f not in seen:
+        if f and f not in seen and f.lower() not in exclude:
             fields_final.append(f)
             seen.add(f)
-    # Append required fields if not already satisfied.
-    # "Supplier Part Number" is satisfied by any field matching /part\s*number/i
-    # (e.g. "Mouser Part Number", "Digikey Part Number").
-    _part_num_present = any(_re.search(r'part\s*number', s, _re.IGNORECASE) for s in seen)
-    for f in required_fields:
-        _is_part_num = bool(_re.search(r'part\s*number', f, _re.IGNORECASE))
-        if _is_part_num and _part_num_present:
+
+    discovered: List[str] = []
+    if cfg.get("include_all_fields", True):
+        try:
+            discovered = discover_symbol_fields(proj.sch, verbose)
+        except Exception as e:
+            print(f"Warning: BOM field discovery failed ({e}); using configured fields only.", file=sys.stderr)
+    # Case/spacing variants are separate fields to KiCad, so request each one
+    # here; _merge_similar_columns folds them back together afterwards.
+    extras: List[str] = []
+    for f in sorted(discovered, key=str.lower):
+        if f in seen or f.lower() in exclude:
             continue
-        if f not in seen:
-            fields_final.append(f)
-            seen.add(f)
-            if _is_part_num:
-                _part_num_present = True
+        extras.append(f)
+        seen.add(f)
+    fields_final += extras
+    if extras:
+        print(f"BOM: including {len(extras)} extra schematic field(s): {', '.join(extras)}", file=sys.stderr)
+
+    # Append the supplier placeholders only when nothing already covers them:
+    # "MPN" or "Mouser Part Number" satisfies the part-number requirement.
+    for f in ["Supplier", "Supplier Part Number"]:
+        pat = _PART_NUM_RE if _PART_NUM_RE.search(f) else _SUPPLIER_RE
+        if f in seen or f.lower() in exclude or any(pat.search(s) for s in seen):
+            continue
+        fields_final.append(f)
+        seen.add(f)
     if fields_final:
         cmd += ["--fields", ",".join(fields_final)]
 
@@ -505,26 +924,29 @@ def export_bom(kicad: str, proj: Project, out_dir: Path, cfg: Dict[str, Any], ve
 
     res = run(cmd, verbose=verbose)
     if res.code == 0 and out_path.exists():
-        # Post-check: warn if required columns are missing from header
+        if cfg.get("merge_similar_fields", True):
+            _merge_similar_columns(out_path, verbose)
+        # Post-check: warn if supplier/part-number data is missing from header
         try:
-            import csv  # local import to avoid top-level dependency in non-BOM runs
-            with out_path.open("r", encoding="utf-8-sig", newline="") as f:
-                # Attempt to detect delimiter
-                sample = f.read(2048)
-                f.seek(0)
-                try:
-                    dialect = csv.Sniffer().sniff(sample, delimiters=[",", "\t", ";"])
-                except Exception:
-                    class _Dial: pass
-                    dialect = _Dial(); setattr(dialect, "delimiter", ",")
-                reader = csv.reader(f, delimiter=getattr(dialect, "delimiter", ","))
-                header = next(reader, [])
-                header_set = set(h.strip() for h in header)
-                if "Supplier" not in header_set:
-                    print("Warning: BOM is missing expected column 'Supplier'. Add this field to your symbols or update BOM settings.", file=sys.stderr)
-                import re as _re2
-                if not any(_re2.search(r'part\s*number', h, _re2.IGNORECASE) for h in header_set):
-                    print("Warning: BOM is missing a 'Part Number' column (e.g. 'Supplier Part Number', 'Mouser Part Number'). Add this field to your symbols or update BOM settings.", file=sys.stderr)
+            rows, _delim = _read_csv_table(out_path)
+            header = [h.strip() for h in (rows[0] if rows else [])]
+            if not any(_SUPPLIER_RE.search(h) for h in header):
+                print("Warning: BOM has no supplier column. Add a 'Supplier' field to your symbols or update BOM settings.", file=sys.stderr)
+            if not any(_PART_NUM_RE.search(h) for h in header):
+                print("Warning: BOM has no part-number column (e.g. 'MPN', 'Supplier Part Number', 'Mouser Part Number'). Add this field to your symbols or update BOM settings.", file=sys.stderr)
+            # A part number that varies within a grouped row is silently lost by
+            # kicad-cli unless the column is part of --group-by.
+            group_by = [str(g).strip() for g in (cfg.get("group_by") or [])]
+            pn_cols = [h for h in header if _PART_NUM_RE.search(h)]
+            ungrouped = [h for h in pn_cols if h not in group_by]
+            if group_by and ungrouped:
+                print(
+                    "Note: part-number column(s) {} are not in bom.group_by {}; symbols that share a "
+                    "value/footprint but carry different part numbers collapse into one row.".format(
+                        ", ".join(repr(h) for h in ungrouped), group_by
+                    ),
+                    file=sys.stderr,
+                )
         except Exception:
             # Non-fatal: ignore parsing issues
             pass
@@ -730,8 +1152,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             s = export_step(kicad_cli_path, proj, out_dir, config.get("step", {}), verbose)
             outputs["step"] = str(s)
         if config.get("pcb_pdf", {}).get("enabled", True):
-            ppdf = export_pcb_pdf(kicad_cli_path, proj, out_dir, config.get("pcb_pdf", {}), verbose)
-            outputs["pcb_pdf"] = str(ppdf)
+            outputs.update(export_pcb_pdf(kicad_cli_path, proj, out_dir, config.get("pcb_pdf", {}), verbose))
         if config.get("schematics_pdf", {}).get("enabled", True):
             spdf = export_sch_pdf(kicad_cli_path, proj, out_dir, config.get("schematics_pdf", {}), verbose)
             outputs["schematics_pdf"] = str(spdf)
